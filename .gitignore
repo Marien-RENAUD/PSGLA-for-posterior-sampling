@@ -1,0 +1,7 @@
+*.pth
+**/__pycache__
+*.npy
+*.gz
+*.txt
+*.ckpt
+Sampling/results/*
