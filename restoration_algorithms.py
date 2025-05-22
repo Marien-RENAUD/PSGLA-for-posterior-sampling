@@ -2,34 +2,34 @@ import torch
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from skimage.metrics import structural_similarity as ssim
-from skimage.metrics import peak_signal_noise_ratio as PSNR
 import os
 import sys
-import utils
 import argparse
-import imageio
 import cv2
 from deepinv.optim.data_fidelity import L2
-
 
 def baseline_restoration_inpainting(img_t, mask_t, device, R = 3):
     """
     Implementation in OpenCV of the method proposed in "An Image Inpainting Technique Based on the Fast Marching Method" by Alexandru Telea.
+    
+    Inputs:
+        img_t       Observation (torch tensor)
+        mask_t      Mask of the observation (torch tensor)
+        device      cuda device used to store samples
+        R           Parameter of radius of the method
+    Outputs:
+        Xlist       empty list
+        Xlist_mmse  list of one element with the restoration
+        Xlist_mmse2 empty list
     """
     img_np = img_t.cpu().detach().numpy()
     img_np = np.transpose(img_np[0,:,:,:], (1,2,0))
     img_np = (255*img_np).astype(np.uint8)
-    print(mask_t.shape)
-    print(img_np.shape)
     mask_np = mask_t.cpu().detach().numpy()
     mask_np = (mask_np).astype(np.uint8)
-    print(torch.sum(torch.abs(img_t * mask_t)))
-    
     inpaint_img_np = cv2.inpaint(img_np, mask_np, R, cv2.INPAINT_NS)
     inpaint_img_np = inpaint_img_np.astype(np.float32) / 255.0
     inpaint_img_t = torch.from_numpy(np.transpose(np.ascontiguousarray(inpaint_img_np),(2,0,1))).float().to(device)
-
     return [], [inpaint_img_t], []
 
 
@@ -37,23 +37,25 @@ def baseline_restoration_inpainting(img_t, mask_t, device, R = 3):
 
 def pnpula(init, data_grad, prior_grad, delta, lambd, n_iter = 5000, n_inter = 1000, n_inter_mmse = 1000, seed = None, device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu"), c_min = -1, c_max = 2, path = None, save_images_online = False, name = None):
     """
-    PnP-ULA sampling algorithm 
+    PnP-ULA sampling algorithm as proposed in "Bayesian imaging using plug & play priors: when langevin meets tweedie" by Rémi Laumont, Valentin De Bortoli, Andrés Almansa, Julie Delon, Alain Durmus, and Marcelo Pereyra
 
     Inputs:
         init        Initialization of the Markov chain (torch tensor)
-        prior_grad  Gradient of the log-prior (already multiplied by the regularization parameter)
         data_grad   Gradient of the likelihood
+        prior_grad  Gradient of the log-prior (already multiplied by the regularization parameter)
         delta       Discretization step-size (torch tensor)
         lambd       Moreau-Yoshida regularization parameter (torch tensor)
         n_iter      Number of ULA iterations
         n_inter     Number of iterations before saving of a sample
         n_inter_mmse Number of iterations for a mean computation
-        device      cuda device used to store samples
         seed        int, seed used
-        path        str : where to store the data
-        name        name of the stored dictionnary
+        device      cuda device used to store samples
         c_min       To ensure strong convexity
         c_max       To ensure strong convexity
+        path        str : where to store the data
+        save_images_online If True, save the image during the process
+        name        name of the stored dictionnary
+        
     Outputs:
         Xlist       Samples stored every n_inter iterations
         Xlist_mmse  Mmse computed over n_inter_mmse iterations
@@ -67,15 +69,13 @@ def pnpula(init, data_grad, prior_grad, delta, lambd, n_iter = 5000, n_inter = 1
     # Markov chain init
     X = torch.zeros(im_shape, dtype = dtype, device = device)
     X = init.clone().detach()
+    One = torch.ones(im_shape, dtype = dtype, device = device)
     # To compute the empirical average over n_inter_mmse
     xmmse = torch.zeros(im_shape, dtype = dtype, device = device)
     # To compute the empirical variance over n_inter_mmse
     xmmse2 = torch.zeros(im_shape, dtype = dtype, device = device)
-    # 
-    One = torch.ones(xmmse2.shape)
-    One = One.to(device)
 
-    # 
+    # Definition of the constant factor in front of the Gaussian noise
     brw = torch.sqrt(2*delta)
     brw = brw.to(device)
     print("delta = {}".format(delta.float()))
@@ -160,25 +160,26 @@ def pnpula(init, data_grad, prior_grad, delta, lambd, n_iter = 5000, n_inter = 1
     return Xlist, Xlist_mmse, Xlist_mmse2
 
 
-def psgla(init, data_grad, denoiser, alpha, lambd, sig_float = 0.0055, delta = 4e-5, n_iter = 5000, n_inter = 1000, n_inter_mmse = 1000, seed = None, device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu"), c_min = -1, c_max = 2, path = None, save_images_online = False, name = None):
+def psgla(init, data_grad, denoiser, alpha, lambd, sig_float = 0.0055, delta = 4e-5, n_iter = 5000, n_inter = 1000, n_inter_mmse = 1000, seed = None, device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu"), path = None, save_images_online = False, name = None):
     """
-    Implementation of the Proximal Stochastic Gradient Langevin Algorithm (PSGLA) 
+    Implementation of the Proximal Stochastic Gradient Langevin Algorithm (PSGLA) as proposed in "Analysis of Langevin Monte Carlo via convex optimization" by A Durmus, S Majewski, and B Miasojedow
 
     Inputs:
         init        Initialization of the Markov chain (torch tensor)
-        denoiser    Denoiser
         data_grad   Gradient of the likelihood
-        delta       Discretization step-size (torch tensor)
+        denoiser    Denoiser
+        alpha       Relaxation paramter for the denoiser
         lambd       Moreau-Yoshida regularization parameter (torch tensor)
+        sig_float   Noise level of the denoiser
+        delta       Discretization step-size (torch tensor)
         n_iter      Number of ULA iterations
         n_inter     Number of iterations before saving of a sample
         n_inter_mmse Number of iterations for a mean computation
-        device      cuda device used to store samples
         seed        int, seed used
+        device      cuda device used to store samples
         path        str : where to store the data
+        save_images_online If True, save the images of iterations during the process
         name        name of the stored dictionnary
-        c_min       To ensure strong convexity
-        c_max       To ensure strong convexity
     Outputs:
         Xlist       Samples stored every n_inter iterations
         Xlist_mmse  Mmse computed over n_inter_mmse iterations
@@ -196,9 +197,6 @@ def psgla(init, data_grad, denoiser, alpha, lambd, sig_float = 0.0055, delta = 4
     xmmse = torch.zeros(im_shape, dtype = dtype, device = device)
     # To compute the empirical variance over n_inter_mmse
     xmmse2 = torch.zeros(im_shape, dtype = dtype, device = device)
-    # 
-    One = torch.ones(xmmse2.shape)
-    One = One.to(device)
 
     # Parameters setting
     delta_float = delta
@@ -235,7 +233,7 @@ def psgla(init, data_grad, denoiser, alpha, lambd, sig_float = 0.0055, delta = 4
             # grad F : gaussian Data fit
             grad_log_data = data_grad(X) # T comment if we want to sample from the prior
             # Langevin update
-            Y = X + noise_ratio*sig*Z #+ (delta/lambd)*grad_log_data + noise_ratio*sig*Z
+            Y = X + (delta/lambd)*grad_log_data + noise_ratio*sig*Z
             # Denoiser update
             X = (1- alpha) * Y + alpha * denoiser.forward(Y, sig_den)
 
@@ -253,7 +251,6 @@ def psgla(init, data_grad, denoiser, alpha, lambd, sig_float = 0.0055, delta = 4
                 Y_numpy = Y.detach().cpu().numpy()[0,:,:,:]
                 Y_numpy = np.transpose(Y_numpy, (1,2,0))
                 plt.imsave(path+'/y_'+str(i)+'.png', np.clip(Y_numpy,0,1), cmap = None)
-
 
             # Computation online of E[X] and E[X**2]
             if iter_mmse <= n_inter_mmse-1:
@@ -280,8 +277,6 @@ def psgla(init, data_grad, denoiser, alpha, lambd, sig_float = 0.0055, delta = 4
                         'Mmse' : Xlist_mmse,
                         'Mmse2' : Xlist_mmse2,
                         'n_iter' : n_iter,
-                        'c_min' : c_min,
-                        'c_max' : c_max,
                         'lambda' : lambd,
                         'delta' : delta,
                     }
@@ -290,9 +285,32 @@ def psgla(init, data_grad, denoiser, alpha, lambd, sig_float = 0.0055, delta = 4
     return Xlist, Xlist_mmse, Xlist_mmse2
 
 def diffpir(y, mask, device, denoiser, lambda_ = .13, t_start = 200, n_iter = 20, zeta = 0.8, sigma_noise = 10. / 255.0):
+    """
+    Implementation of the Diffusion for Plug-and-play Image Restoration (DiffPIR) algorithm proposed in "Denoising diffusion models for plug-and-play image restoration" by Y Zhu, K Zhang, J Liang, J Cao, B Wen, R Timofte, and L Van Gool
+    
+    Inputs:
+        y           Observation (torch tensor)
+        mask        Mask for inpainting (torch tensor)
+        device      cuda device used to store samples
+        denoiser    Denoiser
+        lambda_      Regularisation parameter (float)
+        t_start     Time of start for the DiffPIR algorithm
+        n_iter      Number of DiffPIR iterations
+        zeta        Parameter for the average aloung the iterations
+        sigma_noise Noise parameter to define the schedule of noise
+
+    Outputs:
+        Xlist       List of the n_inter iterations
+        Xlist_mmse  Output of the algorithm, last iteration
+        Xlist_mmse2 empty list []
+    """
+
     T = 1000  # Number of timesteps used during training
 
     def get_alphas(beta_start=0.1 / 1000, beta_end=20 / 1000, num_train_timesteps=T):
+        """
+        To define DiffPIR parameters.
+        """
         betas = np.linspace(beta_start, beta_end, num_train_timesteps, dtype=np.float32)
         betas = torch.from_numpy(betas).to(device)
         alphas = 1.0 - betas
@@ -332,12 +350,7 @@ def diffpir(y, mask, device, denoiser, lambda_ = .13, t_start = 200, n_iter = 20
             curr_sigma = sigmas[t_start - 1 - seq[i]].cpu().numpy()
 
             # 1. Denoising step
-            # print('sigma :', curr_sigma)
-            # print("current psnr : {:.2f}dB".format(psnr(np.clip(tensor2array(x_true), 0, 1), np.clip(tensor2array(x), 0, 1))))
-            # plt.imsave(exp_out_path+'img_x_'+str(i)+'input.png', single2uint(np.clip(tensor2array(x), 0, 1)))
             x0 = 2*denoiser.forward((x+1)/2, curr_sigma*1.)-1
-            # plt.imsave(exp_out_path+'img_x_'+str(i)+'_den_input.png', single2uint(np.clip(tensor2array(x0), 0, 1)))
-            # print("current psnr : {:.2f}dB".format(psnr(np.clip(tensor2array(x_true), 0, 1), np.clip(tensor2array(x0), 0, 1))))
 
             if not seq[i] == seq[-1]:
                 # 2. Data fidelity step
@@ -370,29 +383,28 @@ def diffpir(y, mask, device, denoiser, lambda_ = .13, t_start = 200, n_iter = 20
     return X_list, [torch.squeeze(x)], []
 
 
-def pnp(init, data_grad, Pb, denoiser, alpha, lambd, sig_float = 0.0055, delta = 4e-5, n_iter = 5000, n_inter = 1000, n_inter_mmse = 1000, seed = None, device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu"), c_min = -1, c_max = 2, path = None, save_images_online = False, name = None):
+def pnp(init, data_grad, Pb, denoiser, alpha, lambd, sig_float = 0.0055, delta = 1e-5, n_iter = 500, device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu"), path = None, save_images_online = False, name = None):
     """
     Implementation of the Plug and Play algorithm, Forward-Backward scheme
 
     Inputs:
         init        Initialization of the Markov chain (torch tensor)
-        denoiser    Denoiser
         data_grad   Gradient of the likelihood
-        delta       Discretization step-size (torch tensor)
+        Pb          Inverse problem to solve (string)
+        denoiser    Denoiser
+        alpha       Relaxation parameter of the denoiser
         lambd       Moreau-Yoshida regularization parameter (torch tensor)
+        sig_float   Noise level of the denoiser
+        delta       Discretization step-size (torch tensor)
         n_iter      Number of ULA iterations
-        n_inter     Number of iterations before saving of a sample
-        n_inter_mmse Number of iterations for a mean computation
         device      cuda device used to store samples
-        seed        int, seed used
         path        str : where to store the data
+        save_images_online  If True, save images of the iterations during the computation
         name        name of the stored dictionnary
-        c_min       To ensure strong convexity
-        c_max       To ensure strong convexity
     Outputs:
-        Xlist       Samples stored every n_inter iterations
-        Xlist_mmse  Mmse computed over n_inter_mmse iterations
-        Xlist_mmse2 Average X**2 computed over n_inter_mmse iterations
+        Xlist       List of the n_inter iterations
+        Xlist_mmse  Output of the algorithm, last iteration
+        Xlist_mmse2 empty list []
     """
     # Type
     dtype = torch.float32
@@ -420,13 +432,6 @@ def pnp(init, data_grad, Pb, denoiser, alpha, lambd, sig_float = 0.0055, delta =
  
     if path == None:
         path = str()   
-    if seed != None:
-        gen = torch.Generator(device=device)
-        gen.manual_seed(seed) #for reproductivity
-    if name == None:
-        name = str()
-    if n_inter_mmse == None:
-        n_inter_mmse = np.copy(n_inter)
 
     #To store results
     Xlist = []
@@ -457,29 +462,27 @@ def pnp(init, data_grad, Pb, denoiser, alpha, lambd, sig_float = 0.0055, delta =
 
     return Xlist, [torch.squeeze(X)], []
 
-def red(init, data_grad, Pb, denoiser, alpha, lambd, sig_float = 0.0055, delta = 4e-5, n_iter = 5000, n_inter = 1000, n_inter_mmse = 1000, seed = None, device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu"), c_min = -1, c_max = 2, path = None, save_images_online = False, name = None):
+def red(init, data_grad, Pb, denoiser, lambd, sig_float = 0.0055, delta = 1e-5, n_iter = 500, device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu"), path = None, save_images_online = False, name = None):
     """
-    Implementation of the Regularization by Denoising algorithm
+    Implementation of the Regularization by Denoising algorithm proposed in "The little engine that could: Regularization by denoising (RED)" by Y Romano, M Elad, P Milanfar
 
     Inputs:
-        init        Initialization of the Markov chain (torch tensor)
-        denoiser    Denoiser
-        data_grad   Gradient of the likelihood
-        delta       Discretization step-size (torch tensor)
-        lambd       Moreau-Yoshida regularization parameter (torch tensor)
-        n_iter      Number of ULA iterations
-        n_inter     Number of iterations before saving of a sample
-        n_inter_mmse Number of iterations for a mean computation
-        device      cuda device used to store samples
-        seed        int, seed used
-        path        str : where to store the data
-        name        name of the stored dictionnary
-        c_min       To ensure strong convexity
-        c_max       To ensure strong convexity
+        init                 Initialization of the Markov chain (torch tensor)
+        data_grad            Gradient of the likelihood
+        Pb                   Type of inverse problem to tackle (string)
+        denoiser             Denoiser
+        lambd                Regularization parameter (torch tensor)
+        sig_float            Noise parameter for the denoiser (float)
+        delta                Step-size (float)
+        n_iter               Number of iterations
+        device               Cuda device used to store samples
+        path                 Where to store the data (str)
+        save_images_online   If we save images through the iterations (bool)
+        name                 Name of the stored dictionnary
     Outputs:
-        Xlist       Samples stored every n_inter iterations
-        Xlist_mmse  Mmse computed over n_inter_mmse iterations
-        Xlist_mmse2 Average X**2 computed over n_inter_mmse iterations
+        Xlist       List of the n_inter iterations
+        Xlist_mmse  Output of the algorithm, last iteration
+        Xlist_mmse2 empty list []
     """
     # Type
     dtype = torch.float32

@@ -9,6 +9,8 @@ pars = parser.parse_args()
 
 np.random.seed(0) #for reproductivity
 
+path_result = "results"
+os.makedirs(path_result, exist_ok = True)
 path_result = "results/result_GMM"
 os.makedirs(path_result, exist_ok = True)
 

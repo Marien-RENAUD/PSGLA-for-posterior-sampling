@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -11,7 +10,6 @@ from natsort import os_sorted
 from utils_images import *
 from restoration_algorithms import *
 import argparse
-import imageio
 import deepinv as deepinv
 
 ###
@@ -19,20 +17,17 @@ import deepinv as deepinv
 ###
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_iter", type=int, default=10000, help='number of iteration')
+parser.add_argument("--N", type=int, default=10000, help='number of iteration')
 parser.add_argument("--alpha", type=float, default=1., help='relaxation parameter of the denoiser')
 parser.add_argument("--s", type=float, default=5., help='denoiser parameter')
-parser.add_argument("--img", type = str, default = 'castle.png', help = 'image in the set20 dataset to reconstruct')
 parser.add_argument("--dataset_name", type = str, default = 'set1c', help = 'dataset of images to reconstruct')
-parser.add_argument("--path_result", type=str, default='result', help='path to save the results : it will be save in results/path_result')
-parser.add_argument("--model_name", type=str, default = None, help='name of the model for our models')
+parser.add_argument("--path_result", type=str, default='images', help='path to save the results : it will be save in results/path_result')
 parser.add_argument("--gpu_number", type=int, default = 0, help='gpu number use')
-parser.add_argument("--Lip", type=bool, default = False, help='True : the network is 1-Lip, False : no constraint')
 parser.add_argument("--blur_type", type=str, default = 'uniform', help='uniform : uniform blur, gaussian : gaussian blur')
+parser.add_argument("--sigma", type=float, default = 1., help='noise level of the observation')
 parser.add_argument("--l", type=int, default = 4, help='(2*l+1)*(2*l+1) is the size of the blur kernel. Need to verify 2l+1 < 128')
 parser.add_argument("--si", type=float, default = 1., help='variance of the blur kernel in case of gaussian blur')
 parser.add_argument("--prop", type=float, default = 0.5, help='proportion of masked pixels in random inpainting')
-parser.add_argument("--num_of_layers", type=int, default = 17, help='numbers of layers in the deep neural network')
 parser.add_argument("--delta", type=float, default = 3e-5, help='step-size for the data-fidelity')
 parser.add_argument("--lambd", type=float, default = 1., help='regularization weights')
 parser.add_argument("--zeta", type=float, default = 0.8, help='regularization weights for DiffPIR')
@@ -45,37 +40,20 @@ parser.set_defaults(grayscale=False)
 parser.add_argument('--save_images_online', dest='save_images_online', action='store_true')
 parser.set_defaults(save_images_online=False)
 parser.add_argument("--alg", type=str, default = 'psgla', help="Choice of algorithm, implemented alg : 'psgla', 'pnp_ula', 'pnp'")
-parser.add_argument("--den", type=str, default = 'Prox_DRUNet', help="Choice of denoiser with pretrained weights on color natural images, implemented alg : 'Prox_DRUNet', 'DnCNN'")
+parser.add_argument("--den", type=str, default = 'DnCNN', help="Choice of denoiser with pretrained weights on color natural images, implemented alg : 'Prox_DRUNet', 'DnCNN', 'DRUNet', 'GSDRUNet', 'Prox_DRUNet', 'TV'")
 parser.add_argument("--den_TV_it", type=int, default = 10, help="Number of iteration to estimate the Prox TV at each iteration of the algorithm")
 parser.add_argument("--indx_start", type = int, default = 0, help = "Indice of image to start to restore inside the dataset")
 pars = parser.parse_args()
 
 ###
-# PARAMETERS
+# SAVING PATH DEFINITION
 ###
 
-# Parameters for PnP-ULA
-n_iter = pars.n_iter #1000
-n_burn_in = int(n_iter/10)
-n_inter = int(n_iter/1000)
-n_inter_mmse = np.copy(n_inter)
-
-# Denoiser parameters
-s = pars.s
-
-# Regularization parameters
-alpha = pars.alpha # 1 or 0.3
-c_min = 0 #-1
-c_max = 1 #2
-
-# Inverse problem prameters
-sigma = 1
-l = pars.l # size of the blurring kernel
-
 # Path to save the results
+path_result = "results"
+os.makedirs(path_result, exist_ok = True)
 path_result = 'results/' + pars.path_result
 os.makedirs(path_result, exist_ok = True)
-
 path_result = os.path.join(path_result, pars.Pb)
 os.makedirs(path_result, exist_ok = True)
 if '--prop' in sys.argv:
@@ -99,8 +77,8 @@ if '--lambd' in sys.argv:
 if '--alpha' in sys.argv:
     path_result = os.path.join(path_result, 'alpha_'+str(pars.alpha))
     os.makedirs(path_result, exist_ok = True)
-if '--n_iter' in sys.argv:
-    path_result = os.path.join(path_result, 'n_iter_'+str(pars.n_iter))
+if '--N' in sys.argv:
+    path_result = os.path.join(path_result, 'N_'+str(pars.N))
     os.makedirs(path_result, exist_ok = True)
 if '--seed_alg' in sys.argv:
     path_result = os.path.join(path_result, 'seed_alg_'+str(pars.seed_alg))
@@ -118,7 +96,14 @@ if '--den_TV_it' in sys.argv:
 ###
 # Harware Parameters
 ###
-
+# Inverse problem parameters
+sigma = pars.sigma
+l = pars.l # size of the blurring kernel
+# Number of iterations
+N = pars.N
+n_burn_in = int(N/10)
+n_inter = int(N/1000)
+n_inter_mmse = np.copy(n_inter)
 # GPU device selection
 cuda = True
 device = "cuda:"+str(pars.gpu_number)
@@ -127,79 +112,161 @@ dtype = torch.float32
 tensor = torch.FloatTensor
 # Seed of the algorithm
 seed = pars.seed_alg
-
-# Prior regularization parameter
+# Regularization parameters
+alpha = pars.alpha # 1 or 0.3
 alphat = torch.tensor(alpha, dtype = dtype, device = device)
+c_min = 0 #-1
+c_max = 1 #2
 # Normalization of the standard deviation noise distribution
 sigma1 = sigma/255.0
 sigma2 = sigma1**2
 sigma2t = torch.tensor(sigma2, dtype = dtype, device = device)
-# Normalization of the denoiser noise level
-s1 = s/255.
-s2 = (s1)**2
-s2t = torch.tensor(s2, dtype = dtype, device = device)
+
+###
+# Denoiser definition
+###
+
+if pars.den == 'DnCNN':
+    denoiser = deepinv.models.DnCNN(in_channels=3, out_channels=3, pretrained='Pretrained_models/dncnn_sigma2_lipschitz_color.pth', device = device)
+elif pars.den == 'Prox_DRUNet':
+    denoiser = deepinv.models.GSDRUNet(in_channels=3, out_channels=3, pretrained='Pretrained_models/Prox-DRUNet.ckpt', device = device, act_mode="s")
+elif pars.den == 'GSDRUNet':
+    denoiser = deepinv.models.GSDRUNet(in_channels=3, out_channels=3, pretrained='Pretrained_models/GSDRUNet.ckpt', device = device)
+elif pars.den == 'DRUNet':
+    denoiser = deepinv.models.DRUNet(in_channels=3, out_channels=3, pretrained='Pretrained_models/drunet_color.pth', device=device)
+elif pars.den == 'TV':
+    denoiser = deepinv.models.TVDenoiser(n_it_max=pars.den_TV_it).to(device)
+else:
+    raise ValueError("Denoiser not implemented.")
+
 
 ###
 # Algorithm Parameters
 ###
 
 if pars.alg == "pnp_ula":
+    # definition of the prior and its noise level
+    if not('--s' in sys.argv) and pars.den == "DnCNN":
+        s = 2.0 / 255.
+    else:
+        s = pars.s
+    s1 = s/255.
+    s2 = (s1)**2
+    s2t = torch.tensor(s2, dtype = dtype, device = device)
+    Ds = lambda x : denoiser.forward(x, s1)
+    prior_grad = lambda x : alphat*(Ds(x) - x)/s2t
+    # Number of iterations
+    if not('--N' in sys.argv) and pars.den == "DnCNN":
+        N = 100000
+    else:
+        N = pars.N
     # Parameter strong convexity in the tails
     lambd = 0.5/(2/sigma2 + alpha/s2)
     lambdt = torch.tensor(lambd, dtype = dtype, device = device)
-
     # Discretization step-size
     delta_float = 1/3/(1/sigma2 + 1/lambd + alpha/s2)
     deltat = torch.tensor(delta_float, dtype = dtype, device = device)
 
 elif pars.alg == "psgla":
-    lambd = pars.lambd
+    if pars.den == "DnCNN":
+        if not('--s' in sys.argv):
+            s = 2.0 / 255.
+        else:
+            s = pars.s / 255.
+        if not('--lambd' in sys.argv):
+            lambd = 5.0
+        else:
+            lambd = pars.lambd
+    elif pars.den == "TV":
+        if not('--s' in sys.argv):
+            s = 10.0 / 255.
+        else:
+            s = pars.s / 255.
+        if not('--lambd' in sys.argv):
+            lambd = 10.0
+        else:
+            lambd = pars.lambd
+        if not('--N' in sys.argv):
+            N = 1000
+        else:
+            N = pars.N
+    else:
+        s = pars.s / 255.
+        lambd = pars.lambd
+        N = pars.N
     lambdt = torch.tensor(lambd, dtype = dtype, device = device)
-    sig_float = pars.s / 255.
-    delta_float = sig_float**2
+    delta_float = s**2
 
 elif pars.alg == "baseline":
     lambd = delta_float = None
 
 elif pars.alg == "pnp" or pars.alg == "red":
-    lambd = pars.lambd
+    if not('--s' in sys.argv):
+        if pars.den == "DnCNN":
+            s = 2.0 / 255.
+        elif pars.den == "GSDRUNet":
+            if pars.alg == "pnp":
+                s = 5.0 /255.
+            elif pars.alg == "red":
+                s = 7.0 /255.
+        else:
+            s = pars.s
+    if not('--delta' in sys.argv):
+        if pars.den == "DnCNN" or pars.den == "GSDRUNet":
+            delta_float = 1e-5
+        else:
+            delta_float = pars.delta
+    if not('--N' in sys.argv):
+        if pars.den == "DnCNN" or pars.den == "GSDRUNet":
+            N = 500
+        else:
+            N = pars.N
+    if not('--lambd' in sys.argv):
+        if pars.den == "DnCNN":
+            if pars.alg == "pnp":
+                lambd = 1.
+            elif pars.alg == "red":
+                lambd = 150000.0
+        elif pars.den == "GSDRUNet":
+            if pars.alg == "pnp":
+                lambd = 0.5
+            elif pars.alg == "red":
+                lambd = 70000.0
+        else:
+            lambd = pars.lambd
     lambdt = torch.tensor(lambd, dtype = dtype, device = device)
-    sig_float = pars.s / 255.
-    delta_float = pars.delta
 
 elif pars.alg == "diffpir":
-    sig_float = delta_float = None
-    n_iter = 20
+    s = delta_float = None
+    N = 20
     if '--lambd' in sys.argv:
         lambd = pars.lambd
     else:
-        lambd = .13
-    zeta = pars.zeta
+        lambd = .05
+    if '--zeta' in sys.argv:
+        zeta = pars.zeta
+    else:
+        zeta = .999
     t_start = pars.t_start
-    sigma_noise = pars.s / 255.
-
+    s = pars.s / 255.
     if (pars.den != "GSDRUNet") and (pars.den != "DRUNet") and (pars.den != "DiffUNet"):
         raise ValueError("DiffPIR is only implemented with DRUNet architecture.")
 
+###
+# IMAGE Loading
+###
 # Set input image paths
 if '--img' in sys.argv : # if a specific image path is given
-    input_paths = ['../datasets/set20/'+pars.img]
+    input_paths = ['datasets/CBSD68/'+pars.img]
 else : # if not given, we aply on the whole dataset name given in argument 
-    input_path = os.path.join('../datasets',pars.dataset_name)
+    input_path = os.path.join('datasets',pars.dataset_name)
     input_paths = os_sorted([os.path.join(input_path,p) for p in os.listdir(input_path)])
 
 for i in range(pars.indx_start, len(input_paths)):
     path_result_im = os.path.join(path_result, 'im_'+str(i))
     os.makedirs(path_result_im, exist_ok = True)
-
-    ###
-    # IMAGE
-    ###
-
-    # Image loading
     im_path = input_paths[i]
     im_int = imread_uint(im_path)
-    # im_int = im_int[:256,:256,:]
 
     # Image normalization
     im = np.float32(im_int/255.)
@@ -210,47 +277,11 @@ for i in range(pars.indx_start, len(input_paths)):
         im_t = torch.from_numpy(np.transpose(np.ascontiguousarray(im),(2,0,1))).float().unsqueeze(0).to(device)
 
     ###
-    # Prior Fidelity
-    ###
-
-    # Add the root directory to sys.path
-    # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-    # if pars.Lip:
-    #     from models.model_dncnn.realSN_models import DnCNN
-    # else:
-    #     from models.model_dncnn.models import DnCNN
-    # path_model = "../Pretrained_models/" + pars.model_name + ".pth"
-    # net = DnCNN(channels=1, num_of_layers=pars.num_of_layers)
-    # model = nn.DataParallel(net,device_ids=[int(str(device)[-1])],output_device=device)#.cuda()
-    # dicti = torch.load(path_model, map_location=torch.device(device if torch.cuda.is_available() else "cpu"))
-    # dicti_ = {}
-    # for keys, values in dicti.items():
-    #     dicti_["module."+keys] = values.to(device)
-    # model.load_state_dict(dicti_)
-    # model.eval()
-
-    if pars.den == 'DnCNN':
-        denoiser = deepinv.models.DnCNN(in_channels=3, out_channels=3, pretrained='../Pretrained_models/dncnn_sigma2_lipschitz_color.pth', device = device)
-    elif pars.den == 'Prox_DRUNet':
-        denoiser = deepinv.models.GSDRUNet(in_channels=3, out_channels=3, pretrained='../Pretrained_models/Prox-DRUNet.ckpt', device = device, act_mode="s")
-    elif pars.den == 'GSDRUNet':
-        denoiser = deepinv.models.GSDRUNet(in_channels=3, out_channels=3, pretrained='../Pretrained_models/GSDRUNet.ckpt', device = device)
-    elif pars.den == 'DRUNet':
-        denoiser = deepinv.models.DRUNet(in_channels=3, out_channels=3, pretrained='../Pretrained_models/drunet_color.pth', device=device)
-    elif pars.den == 'TV':
-        denoiser = deepinv.models.TVDenoiser(n_it_max=pars.den_TV_it).to(device)
-    else:
-        raise ValueError("Denoiser not implemented.")
-
-    Ds = lambda x : denoiser.forward(x, s1)
-    prior_grad = lambda x : alphat*(Ds(x) - x)/s2t
-
-    ###
     # Data Fidelity
     ###
 
     if pars.Pb == 'inpainting':
+        # define the observation and data-fidelity for inpainting
         gen = torch.Generator(device=device)
         gen.manual_seed(pars.seed_ip) # for reproductivity
         mask = torch.rand((im_t.shape[2],im_t.shape[3]), generator=gen, device = device)
@@ -271,7 +302,7 @@ for i in range(pars.indx_start, len(input_paths)):
         init_torch = mask * y_t  + neg_mask * 0.5 * torch.ones(y_t.shape).to(device)
 
     if pars.Pb == 'deblurring':
-        # Definition of the convolution operator
+        # define the observation and data-fidelity for deblurring
         if pars.blur_type == 'uniform':
             l_h = 2*l+1
             h = np.ones((1, l_h))
@@ -314,24 +345,27 @@ for i in range(pars.indx_start, len(input_paths)):
     ###
 
     # Name for data storage
-    name = 'sigma{}_s{}'.format(sigma, s)
+    name = 'sigma{}_s{}'.format(sigma, int(255*s))
 
     if pars.alg == "psgla":
-        Samples_t, Mmse_t, Mmse2_t = psgla(init = init_torch, data_grad = data_grad, denoiser = denoiser, alpha = alphat, lambd = lambdt, sig_float = sig_float, delta = delta_float, seed = seed, device = device, n_iter = n_iter, n_inter = n_inter, n_inter_mmse = n_inter_mmse, path = path_result_im, save_images_online = pars.save_images_online, name = name)
+        Samples_t, Mmse_t, Mmse2_t = psgla(init = init_torch, data_grad = data_grad, denoiser = denoiser, alpha = alphat, lambd = lambdt, sig_float = s, delta = delta_float, seed = seed, device = device, n_iter = N, n_inter = n_inter, n_inter_mmse = n_inter_mmse, path = path_result_im, save_images_online = pars.save_images_online, name = name)
     elif pars.alg == "baseline":
         if pars.Pb == "inpainting":
             Samples_t, Mmse_t, Mmse2_t = baseline_restoration_inpainting(y_t, neg_mask_2d, device)
         else:
             raise ValueError("Method only implemented for inpainting.")
     elif pars.alg == "pnp_ula":
-        Samples_t, Mmse_t, Mmse2_t = pnpula(init = init_torch, data_grad = data_grad, prior_grad = prior_grad, delta = deltat, lambd = lambdt, seed = seed, device = device, n_iter = n_iter, n_inter = n_inter, n_inter_mmse = n_inter_mmse, path = path_result_im, save_images_online = pars.save_images_online, name = name)
+        Samples_t, Mmse_t, Mmse2_t = pnpula(init = init_torch, data_grad = data_grad, prior_grad = prior_grad, delta = deltat, lambd = lambdt, seed = seed, device = device, n_iter = N, n_inter = n_inter, n_inter_mmse = n_inter_mmse, path = path_result_im, save_images_online = pars.save_images_online, name = name)
     elif pars.alg == "pnp":
-        Samples_t, Mmse_t, Mmse2_t = pnp(init = init_torch, data_grad = data_grad, Pb = pars.Pb, denoiser = denoiser, alpha = alphat, lambd = lambdt, sig_float = sig_float, delta = delta_float, seed = seed, device = device, n_iter = n_iter, n_inter = n_inter, n_inter_mmse = n_inter_mmse, path = path_result_im, save_images_online = pars.save_images_online, name = name)
+        Samples_t, Mmse_t, Mmse2_t = pnp(init = init_torch, data_grad = data_grad, Pb = pars.Pb, denoiser = denoiser, alpha = alphat, lambd = lambdt, sig_float = s, delta = delta_float, device = device, n_iter = N, path = path_result_im, save_images_online = pars.save_images_online, name = name)
     elif pars.alg == "red":
-        Samples_t, Mmse_t, Mmse2_t = red(init = init_torch, data_grad = data_grad, Pb = pars.Pb, denoiser = denoiser, alpha = alphat, lambd = lambdt, sig_float = sig_float, delta = delta_float, seed = seed, device = device, n_iter = n_iter, n_inter = n_inter, n_inter_mmse = n_inter_mmse, path = path_result_im, save_images_online = pars.save_images_online, name = name)
+        Samples_t, Mmse_t, Mmse2_t = red(init = init_torch, data_grad = data_grad, Pb = pars.Pb, denoiser = denoiser, lambd = lambdt, sig_float = s, delta = delta_float, device = device, n_iter = N, path = path_result_im, save_images_online = pars.save_images_online, name = name)
     elif pars.alg == "diffpir":
-        Samples_t, Mmse_t, Mmse2_t = diffpir(y = y_t, mask = mask, device = device, denoiser = denoiser, n_iter = n_iter, lambda_ = lambd, zeta = zeta, t_start = t_start, sigma_noise = sigma_noise)
+        Samples_t, Mmse_t, Mmse2_t = diffpir(y = y_t, mask = mask, device = device, denoiser = denoiser, n_iter = N, lambda_ = lambd, zeta = zeta, t_start = t_start, sigma_noise = s)
 
+    ###
+    # Save the results
+    ###
 
     #convert object in numpy array for analyse
     Samples, Mmse, Mmse2, Psnr_sample, SIM_sample, Min_sample, Max_sample = [], [], [], [], [], [], []
@@ -409,9 +443,6 @@ for i in range(pars.indx_start, len(input_paths)):
 
     #save the result of the experiment
     dict = {
-            # 'Samples' : Samples,
-            # 'Mmse' : Mmse,
-            # 'Mmse2' : Mmse2,
             'PSNR_sample' : Psnr_sample,
             'SIM_sample' : SIM_sample,
             'PSNR_mmse' : PSNR_list,
@@ -426,7 +457,7 @@ for i in range(pars.indx_start, len(input_paths)):
             'SIM_MMSE' : smmse,
             'std' : std,
             'diff' : diff,
-            'n_iter' : n_iter,
+            'n_iter' : N,
             's' : s,
             'alpha' : alpha,
             'c_min' : c_min,
@@ -436,55 +467,51 @@ for i in range(pars.indx_start, len(input_paths)):
             'lambda' : lambd,
             'delta' : delta_float,
         }
-
     np.save(path_result_im+'/'+ name +'_result.npy', dict)
+
+    if pars.save_images_online:
+        dict['Samples'] = Samples
+        dict['Mmse'] = Mmse
+        dict['Mmse2'] = Mmse2
 
     ###
     # PLOTS
     ###
-
-    # #creation of a video of the samples
-    # writer = imageio.get_writer(os.path.join(path_result,"samples_video"+name+".mp4"), fps=100)
-    # for im_ in Samples:
-    #     im_uint8 = np.clip(im_ * 255, 0, 255).astype(np.uint8)
-    #     writer.append_data(im_uint8)
-    # writer.close()
-
     # PSNR plots
     fig, ax = plt.subplots(figsize = (10,10))
     ax.plot(Psnr_sample, "+")
     ax.set_title("PSNR between samples and GT")
-    fig.savefig(path_result_im +"/PSNR_between_samples_and_GT_n_iter{}".format(n_iter)+".png")
+    fig.savefig(path_result_im +"/PSNR_between_samples_and_GT_n_iter{}".format(N)+".png")
     plt.show()
 
     fig, ax = plt.subplots(figsize = (10,10))
     ax.plot(PSNR_list, "+")
     ax.set_title("PSNR between online MMSE and GT")
-    fig.savefig(path_result_im +"/PSNR_between_online_MMSE_and_GT_n_iter{}".format(n_iter)+".png")
+    fig.savefig(path_result_im +"/PSNR_between_online_MMSE_and_GT_n_iter{}".format(N)+".png")
     plt.show()
 
     fig, ax = plt.subplots(figsize = (10,10))
     ax.plot(SIM_sample, "+")
     ax.set_title("SIM between samples and GT")
-    fig.savefig(path_result_im +"/SIM_between_samples_and_GT_n_iter{}".format(n_iter)+".png")
+    fig.savefig(path_result_im +"/SIM_between_samples_and_GT_n_iter{}".format(N)+".png")
     plt.show()
 
     fig, ax = plt.subplots(figsize = (10,10))
     ax.plot(Psnr_sample, "+")
     ax.set_title("SIM between online MMSE and GT")
-    fig.savefig(path_result_im +"/SIM_between_online_MMSE_and_GT_n_iter{}".format(n_iter)+".png")
+    fig.savefig(path_result_im +"/SIM_between_online_MMSE_and_GT_n_iter{}".format(N)+".png")
     plt.show()
 
     fig, ax = plt.subplots(figsize = (10,10))
     ax.plot(Max_sample, "+")
     ax.set_title("Maximum value of samples")
-    fig.savefig(path_result_im +"/Max_values_samples_n_iter{}".format(n_iter)+".png")
+    fig.savefig(path_result_im +"/Max_values_samples_n_iter{}".format(N)+".png")
     plt.show()
 
     fig, ax = plt.subplots(figsize = (10,10))
     ax.plot(Min_sample, "+")
     ax.set_title("Minimum value of samples")
-    fig.savefig(path_result_im +"/Min_values_samples_n_iter{}".format(n_iter)+".png")
+    fig.savefig(path_result_im +"/Min_values_samples_n_iter{}".format(N)+".png")
     plt.show()
 
     if pars.grayscale:
@@ -510,18 +537,18 @@ for i in range(pars.indx_start, len(input_paths)):
     # Saving of the MMSE compare to the original and observation
     fig = plt.figure(figsize = (10, 10))
     ax1 = fig.add_subplot(1,3,1)
-    ax1.imshow(xmmse, cmap = 'gray')
+    ax1.imshow(np.clip(xmmse,0,1), cmap = 'gray')
     ax1.axis('off')
     ax1.set_title("MMSE (PSNR={:.2f}/SSIM={:.2f})".format(pmmse, smmse))
     ax2 = fig.add_subplot(1,3,2)
-    ax2.imshow(im, cmap = 'gray')
+    ax2.imshow(np.clip(im,0,1), cmap = 'gray')
     ax2.axis('off')
     ax2.set_title("GT")
     ax3 = fig.add_subplot(1,3,3)
-    ax3.imshow(y, cmap = 'gray')
+    ax3.imshow(np.clip(y,0,1), cmap = 'gray')
     ax3.axis('off')
     ax3.set_title("Obs (PSNR={:.2f}/SSIM={:.2f})".format(psb, ssb))
-    fig.savefig(path_result_im+'/MMSE_and_Originale_and_Observation_n_iter{}'.format(n_iter)+'.png')
+    fig.savefig(path_result_im+'/MMSE_and_Originale_and_Observation_n_iter{}'.format(N)+'.png')
     plt.show()
 
     # Saving of the standard deviation and the difference between MMSE and Ground-Truth (GT)
@@ -536,8 +563,8 @@ for i in range(pars.indx_start, len(input_paths)):
     ax2.imshow((error - np.min(error))/(np.max(error) - np.min(error)), cmap = 'gray')
     ax2.axis('off')
     ax2.set_title("Diff MMSE-GT, min = {:.2f}, max = {:.2f}".format(np.min(error), np.max(error)))
-    fig.savefig(path_result_im+'/Std_of_the_Markov_Chain_n_iter{}'.format(n_iter)+'.png')
+    fig.savefig(path_result_im+'/Std_of_the_Markov_Chain_n_iter{}'.format(N)+'.png')
     plt.show()
 
     # Saving of the Fourier transforme of the standard deviation, to detect possible artecfact of sampling
-    plt.imsave(path_result_im+"/Fourier_transform_std_MC_n_iter{}".format(n_iter)+".png",np.clip(np.fft.fftshift(np.log(np.abs(np.fft.fft2(std))+1e-10)),0,1))
+    plt.imsave(path_result_im+"/Fourier_transform_std_MC_n_iter{}".format(N)+".png",np.clip(np.fft.fftshift(np.log(np.abs(np.fft.fft2(std))+1e-10)),0,1))
