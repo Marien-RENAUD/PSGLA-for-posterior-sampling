@@ -6,11 +6,13 @@ The goal is to sample posterior distribution for inverse problem in two context 
 - Gaussian Mixture Model in 2D
 - Inverse problem in imaging (includind inpainting and deblurring)
 
-![Posterior Sampling with PnP-ULA (top row) and PSGLA (bottow row) with three different Gaussian Mixture prior distributions (in blue) and three observations (in red) leading to three posterior distributions (in black, mode probabilities are represented by transparency). The Wasserstein distance during the iterations (right column) is averaged between the three experiments. Note that PnP-PSGLA succeeds to sample the posterior distribution even if there are various modes and the convergence is faster than PnP-ULA.](figures/figure_paper_GMM_2D10000.png)
+To do so, we implemented various methods including PnP ULA and PnP PSGLA.
 
+![Figure GMM](figures/figure_paper_GMM_2D10000.png)
+*Figure 1 – Posterior Sampling with PnP-ULA (top row) and PSGLA (bottow row) with three different Gaussian Mixture prior distributions (in blue) and three observations (in red) leading to three posterior distributions (in black, mode probabilities are represented by transparency). The Wasserstein distance during the iterations (right column) is averaged between the three experiments. Note that PnP-PSGLA succeeds to sample the posterior distribution even if there are various modes and the convergence is faster than PnP-ULA.*
 
-![Qualitative result for image inpainting with 50\% masked pixels and a noise level of $\sigma = 1 / 255$ and various restoration methods implemented in this repository. PnP-ULA is run with 1,000,000 iterations and PSGLA with 10,000 iterations.](figures/Results_restoration_inpainting_various_methods.png)
-
+![Figure image sampling](figures/Results_restoration_inpainting_various_methods.png)
+*Figure 2 – Qualitative result for image inpainting with 50\% masked pixels and a noise level of $\sigma = 1 / 255$ and various restoration methods implemented in this repository. PnP-ULA is run with 1,000,000 iterations and PSGLA with 10,000 iterations.*
 
 
 ## Environment definition
