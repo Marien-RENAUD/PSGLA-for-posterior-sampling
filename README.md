@@ -25,7 +25,7 @@ conda env create -f environment.yml
 
 ## Deep Neural Networks Weights 
 
-To run the code, you need to create a folder named "Pretrained_models" and download to follow open source weights and put them in the folder "Pretrained_models" :
+To run the code, you need to download to follow open source weights and put them in the folder "Pretrained_models" :
 - For DnCNN with control Lipschitz constant proposed by [Learning Maximum Monotone](https://github.com/matthieutrs/LMMO_lightning) follow this [link](https://huggingface.co/deepinv/dncnn/resolve/main/dncnn_sigma2_color.pth?download=true)
 - For the original DRUNet proposed by [DPIR](https://github.com/cszn/DPIR) follow this [link](https://huggingface.co/deepinv/drunet/resolve/main/drunet_deepinv_color.pth?download=true)
 - For the Gradient-Step DRUNet proposed by [GSDRUNet](https://github.com/samuro95/GSPnP) follow this [link](https://huggingface.co/deepinv/gradientstep/resolve/main/GSDRUNet.ckpt)
