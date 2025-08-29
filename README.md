@@ -53,7 +53,7 @@ To run the PnP-PSGLA on to sample image posterior distribution use the following
 ```
 python sampling_images.py --dataset_name "set1c" --alg "psgla"
 ```
-**WARNING**: You need to upload the 'DnCNN' denoiser weights in the folder "Pretrained_models" to run the line.
+:warning: **WARNING**: You need to upload the 'DnCNN' denoiser weights in the folder "Pretrained_models" to run the line.
 
 The output must be :
 """
